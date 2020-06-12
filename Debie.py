@@ -1,18 +1,34 @@
+import discord
 from datetime import datetime, timedelta
 from enum import Enum
 from random import randint
+import uuid
 
-import discord
+from collections import deque
 from discord.ext import commands
+from environs import Env
 
-"""
+from discord.ext import tasks, commands
 
-"""
 
-SUPER_SECRET_API_KEY = "NOTHING FOR YOU TO SEE"
+class ClientHandler(commands.Cog):
 
-description = "A simplebot to delegate chores in our house. Originally developed for Riverknoll24"
-bot = commands.Bot(command_prefix="$", description=description)
+    def __init__(self, bot):
+        self.bot = bot
+
+    @tasks.loop(seconds=10.0)
+    async def bulker(self):
+        pass
+
+
+if __name__ == '__main__':
+    env = Env()
+    env.read_env()
+    SUPER_SECRET_API_KEY = env.str("SUPER_SECRET_API_TOKEN")
+
+    description = "A simplebot to delegate chores in our house. Originally developed for Riverknoll24"
+    bot = commands.Bot(command_prefix="$", description=description)
+    client = ClientHandler(bot) #wrapper for bot
 
 
 @bot.event
@@ -44,16 +60,66 @@ class TaskType(Enum):
     Room = 3
 
 
+"""
+    Conceptual code that allows
+    tasks to have individual histories
+    while allowing functionality to be retained.
+"""
+
+
+class TaskMemento:
+
+    def __init__(self):
+        self.task_histories = dict()  # <K=taskId, V=Task<TaskType={0},toBeAccomplishedByDate={1}>
+
+    def createTask(self, taskId, timeDelta):
+        pass
+
+    def updateHistory(self, taskId, timeDelta):
+        pass
+
+
 class Task:
-    def __init__(self, taskType: TaskType, daysToAccomplishTask: datetime):
+    """
+        @:param uuid -> unique 126-bit identifier
+        @:param createDate -> instance of datetime created
+        @:param daysToAccomplish -> offset of days from createDate
+        @:param taskType -> flag for command structure
+    """
+
+    def __init__(self, taskId: uuid, createDate: datetime, daysToAccomplishTask: timedelta, taskType=TaskType.NoTask):
+        self.taskID = taskId
+        self.createDate = createDate
+        self.dateOffset = daysToAccomplishTask
         self.taskType = taskType
-        self.daysToAccomplishTask = daysToAccomplishTask
+
+    # TODO validate date
+    def addDays(self, days: int):
+        completion_date = self.createDate + self.dateOffset
+        if completion_date > datetime.today():
+            self.dateOffset += timedelta(days=days)
+        else:
+            print("You have went over the alloted time to complete this task!")
+
+    # TODO validate date
+    def subtractDays(self, days: int):
+        completion_date = self.createDate + self.dateOffset
+        if completion_date > datetime.today():
+            delta = timedelta(days=days)
+            # check that their is enough buffer from today to completion_date
+            tdy = datetime.today()
+            if (tdy - delta) > datetime.today():
+                self.dateOffset -= timedelta(days=days)
+            else:
+                print("Sorry but not your falling short on days to procrastinate")
+        else:
+            print("You have went over the alloted time to complete this task!")
 
     def __str__(self):
-        dateStartedStr = datetime.today().strftime("%b %d %Y")
-        dateFinishedStr = self.daysToAccomplishTask.strftime("%b %d %Y")
-        print("Day started task: {0} Day to finish task: {0}".format(dateStartedStr, dateFinishedStr))
-        return "<TaskType={0},daysLeft={0}>".format(self.taskType.name, dateFinishedStr)
+        start_date_str = self.createDate.strftime("%b %d %Y")
+        end_date_str = (self.createDate + self.dateOffset).strftime("%b %d %Y")
+        return "Task=<TaskId={0},dateCreated={1},dateToAccomplish={2},taskType={3}>" \
+            .format(self.taskID, start_date_str, end_date_str, self.taskType.name)
 
 
 """
@@ -67,32 +133,51 @@ class Task:
 class TaskScheduler:
 
     def __init__(self):
-        self.tasks = list()
+        self.task_queue = deque()
 
-    """
-        Init or change the time designated to finish tasks
-    """
-
-    def addDays(self):
-        pass
-
-    def subDays(self):
-        pass
-
-    def changeDaysToCompleteTasks(self, days: datetime.day) -> bool:
+    # @deprecated("createTask")
+    def createAllTasks(self, days: datetime.day):
+        # Testing purposes
         for task in self.enumerateTasks():
-            dayOffset = timedelta(days=days)
-            daysToAccomplishTask = datetime.today() + dayOffset
-            t = Task(task, daysToAccomplishTask)
-            self.tasks.append(t)
+            task_id = uuid.uuid1()
+            now = datetime.now()
+            offset = timedelta(days=days)
+            task_type = task
+            t = Task(task_id, now, offset, task_type)
+            self.task_queue.append(t)
+
+    """
+        Task has a startDate=datetime.today
+        and offsets the alloted time to complete
+        :param days -> days to complete task
+        :param taskType -> if given useful for commands otherwise TaskType.NoTask
+        
+        Note: This function only needs to worry about creating taskId's
+    """
+
+    def createTask(self, days: datetime.day, taskType=TaskType.NoTask) -> bool:
+        task_id = uuid.uuid1()
+        now = datetime.now()
+        offset = timedelta(days=days)
+        if taskType:
+            task = Task(task_id, now, offset, taskType)
+            self.task_queue.append(task)
+            return True
+        else:
+            task = Task(task_id, now, offset)
+            # self.all_tasks.append(task)
+            self.task_queue.append(task)
+            return True
+        return False
 
     def enumerateTasks(self):
         return [task for task in TaskType]
 
     def __str__(self):
         repr_str = str()
-        for t in list(self.tasks):
-            repr_str += str(t) + "\n"
+        while self.task_queue:
+            value = self.task_queue.pop()
+            repr_str += str(value) + "\n"
         return str(repr_str)
 
 
@@ -128,6 +213,7 @@ class HouseMate:
 class House:
 
     def __init__(self, house_name, users=None):
+        self.house_name = house_name
         self.house_mates = list()
         self.task_schedulear = TaskScheduler()
 
@@ -138,9 +224,11 @@ class House:
         except:
             print("Member: {0} could not be added".format(member.name))
 
-    def schedueleTaskByDay(self, dayNumber: int):
-        self.task_schedulear.changeDaysToCompleteTasks(dayNumber)
-        print(self.task_schedulear)
+    def runAllTasks(self, days):
+        self.task_schedulear.createAllTasks(days)
+
+    def schedueleTaskByDay(self, days):
+        self.task_schedulear.createTask(days)
 
     """
         Functionality skips task by checking majority along with
@@ -151,10 +239,9 @@ class House:
         pass
 
     def __str__(self):
-        string_repr = str("<House=")
+        string_repr = str("<House={}".format(self.house_name))
         for member in list(self.house_mates):
             string_repr += str(member) + "\n"
-
         return string_repr + ">"
 
 
@@ -179,17 +266,15 @@ async def commands(ctx):
     await ctx.send(author, embed=embed)
 
 
-@bot.command(name="$Dishes", description="See whose turn it is to wash dishes")
-async def dishes(ctx):
-    pass
+@bot.command(name="time_check")
+async def time_check(ctx):
+    # target_channel = bot.get_channel("720106934992240651")
+    await discord.utils.sleep_until(datetime.now() + timedelta(seconds=10))
+    await ctx.send('Clean the dishes')
 
 
-@bot.command(name="$Skip", description="Skip cycle if majority says its okay")
-async def skip(ctx):
-    pass
-
-
-if __name__ == '__main__':
+@bot.command
+async def printAll(ctx):
     # Below is quick Testsuite
     rk24 = House("Riverknoll_24")
     mate1 = HouseMate("Marcelo Escalante", "Riverknoll_24")
@@ -198,10 +283,14 @@ if __name__ == '__main__':
     rk24.add_house_member(mate1)
     rk24.add_house_member(mate2)
 
-    rk24.schedueleTaskByDay(7)  # a week per task
+    # rk24.schedueleTaskByDay(7)  # a week per task
+    rk24.runAllTasks(7);
+    rk24.task_schedulear.createTask(12)
+    printStr = str(rk24.task_schedulear)
     # rk24.skipTask(@mention.DevTest#8726) example
 
-    # print(rk24)
+    await ctx.send(printStr)
+
 
 bot.run(SUPER_SECRET_API_KEY)
 # EOF
