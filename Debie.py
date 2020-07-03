@@ -1,7 +1,7 @@
 import discord
 from datetime import datetime, timedelta
 from enum import Enum
-from random import randint
+from random import randint, choice
 import uuid
 
 from collections import deque
@@ -10,25 +10,12 @@ from environs import Env
 
 from discord.ext import tasks, commands
 
+env = Env()
+env.read_env()
+SUPER_SECRET_API_KEY = env.str("SUPER_SECRET_API_TOKEN")
 
-class ClientHandler(commands.Cog):
-
-    def __init__(self, bot):
-        self.bot = bot
-
-    @tasks.loop(seconds=10.0)
-    async def bulker(self):
-        pass
-
-
-if __name__ == '__main__':
-    env = Env()
-    env.read_env()
-    SUPER_SECRET_API_KEY = env.str("SUPER_SECRET_API_TOKEN")
-
-    description = "A simplebot to delegate chores in our house. Originally developed for Riverknoll24"
-    bot = commands.Bot(command_prefix="$", description=description)
-    client = ClientHandler(bot) #wrapper for bot
+description = "A simple bot to delegate chores in our house. Originally developed for Riverknoll 24"
+bot = commands.Bot(command_prefix="$", description=description)
 
 
 @bot.event
@@ -67,18 +54,6 @@ class TaskType(Enum):
 """
 
 
-class TaskMemento:
-
-    def __init__(self):
-        self.task_histories = dict()  # <K=taskId, V=Task<TaskType={0},toBeAccomplishedByDate={1}>
-
-    def createTask(self, taskId, timeDelta):
-        pass
-
-    def updateHistory(self, taskId, timeDelta):
-        pass
-
-
 class Task:
     """
         @:param uuid -> unique 126-bit identifier
@@ -93,16 +68,21 @@ class Task:
         self.dateOffset = daysToAccomplishTask
         self.taskType = taskType
 
+    def completion_date(self):
+        return self.createDate + self.dateOffset
+
     # TODO validate date
-    def addDays(self, days: int):
+    def addDays(self, days: int) -> bool:
         completion_date = self.createDate + self.dateOffset
         if completion_date > datetime.today():
             self.dateOffset += timedelta(days=days)
+            return True
         else:
             print("You have went over the alloted time to complete this task!")
+            return False
 
     # TODO validate date
-    def subtractDays(self, days: int):
+    def subtractDays(self, days: int) -> bool:
         completion_date = self.createDate + self.dateOffset
         if completion_date > datetime.today():
             delta = timedelta(days=days)
@@ -133,7 +113,7 @@ class Task:
 class TaskScheduler:
 
     def __init__(self):
-        self.task_queue = deque()
+        self.task_queue = list()
 
     # @deprecated("createTask")
     def createAllTasks(self, days: datetime.day):
@@ -145,6 +125,19 @@ class TaskScheduler:
             task_type = task
             t = Task(task_id, now, offset, task_type)
             self.task_queue.append(t)
+
+    '''
+        Optionally returns nextTask of taskType 
+        otherwise nextTask in double-ended queue
+    '''
+
+    def next_task(self, taskCode):
+        if self.task_queue:
+            for cnt, task in enumerate(self.task_queue):
+                if int(task.taskType.value) == taskCode:
+                    return task
+        else:
+            print("No more tasks in cycle")
 
     """
         Task has a startDate=datetime.today
@@ -175,22 +168,21 @@ class TaskScheduler:
 
     def __str__(self):
         repr_str = str()
-        while self.task_queue:
-            value = self.task_queue.pop()
+        cpy = list(self.task_queue)
+        while cpy:  # for-each copy
+            value = cpy.pop()
             repr_str += str(value) + "\n"
         return str(repr_str)
 
 
 class HouseMate:
 
-    def __init__(self, legal_name=None, of_house=None):
-        self.legal_name = legal_name
-        self.of_house = of_house
-        self.tasks = list()
-
-        self.nick = str
-        if legal_name.split()[0]:
-            self.nick = legal_name.split(" ")[0]
+    def __init__(self, user_id, name, guild, nick=None):
+        self.user_id = user_id
+        self.name = name
+        self.guild = guild
+        if nick:
+            self.nick = nick
 
     def changeNickname(self, nick: str) -> bool:
         if nick:
@@ -201,21 +193,24 @@ class HouseMate:
 
     def changeHouse(self, house_name: str) -> bool:
         if house_name:
-            self.of_house = house_name
+            self.guild = house_name
             return True
         else:
             return False
 
     def __str__(self):
-        return "<Housemate={0},nickname={0}>".format(self.legal_name, self.nick)
+        return "<UserId={0},name={1},guild={2}>".format(self.user_id, self.name, self.guild)
 
 
 class House:
 
-    def __init__(self, house_name, users=None):
+    def __init__(self, house_name):
         self.house_name = house_name
         self.house_mates = list()
         self.task_schedulear = TaskScheduler()
+
+    def mention_member(self):
+        pass
 
     def add_house_member(self, member: HouseMate):
         try:
@@ -229,14 +224,6 @@ class House:
 
     def schedueleTaskByDay(self, days):
         self.task_schedulear.createTask(days)
-
-    """
-        Functionality skips task by checking majority along with
-        shifting a given point to person
-    """
-
-    def skipTask(self, user):
-        pass
 
     def __str__(self):
         string_repr = str("<House={}".format(self.house_name))
@@ -259,38 +246,80 @@ async def commands(ctx):
     # Add to embed template
 
     embed.set_author(name="Help")
-    embed.add_field(name="$Chores", value="Returns entire 4-week cycle of chores", inline=False)
-    embed.add_field(name="$Dishes", value="Returns next person to do Dishes", inline=False)
-    embed.add_field(name="$Trash", value="Returns next person to do Trash", inline=False)
+    embed.add_field(name="$add_member @mention_user", value="add a member by mentioning them!", inline=False)
+    embed.add_field(name="$next arg(Dish, Trash, Room)", value="Returns the date that chore must be accomplished",
+                    inline=False)
+    embed.add_field(name="$coin_flip", value="Returns odds of being choosen", inline=False)
 
     await ctx.send(author, embed=embed)
 
 
-@bot.command(name="time_check")
-async def time_check(ctx):
-    # target_channel = bot.get_channel("720106934992240651")
-    await discord.utils.sleep_until(datetime.now() + timedelta(seconds=10))
-    await ctx.send('Clean the dishes')
+'''
+    Usage: @mention conversion to Member object
+'''
 
 
-@bot.command
-async def printAll(ctx):
+@bot.command(name="add_member")
+async def add_member(ctx, member: discord.Member):
+    if member.nick:
+        bot.rk24.add_house_member(HouseMate(member.id, member.name, member.guild, member.nick))
+    else:
+        bot.rk24.add_house_member(HouseMate(member.id, member.name, member.guild))
+
+
+@bot.command(name="next")
+async def next(ctx, taskType=None):
+    if taskType is None:
+        await ctx.send('No task specified, use {}'.format(bot.rk24.task_schedulear.enumerateTasks()))
+    if bot.rk24.task_schedulear.task_queue:
+        lower = taskType.lower()
+        if lower == "dish" or lower == "dishes":
+            task = bot.rk24.task_schedulear.next_task(1)
+            await ctx.send("Take out the dishes by: {}".format(task.completion_date().strftime("%m/%d/%Y")))
+        if lower == "trash":
+            task = bot.rk24.task_schedulear.next_task(2)
+            await ctx.send("Take out the trash by: {}".format(task.completion_date().strftime("%m/%d/%Y")))
+    else:
+        await ctx.send('No more tasks in cycle')
+
+
+# TODO create registrar form that builds House Object
+@bot.command(name="registar")
+async def registar(ctx):
+    pass
+
+
+@bot.command(name="coin_flip")
+async def coin_flip(ctx):
+    try:
+        await ctx.send(
+            "Coin flip is {0} which has a chance of {1}%" \
+                .format(choice(bot.rk24.house_mates), \
+                        ((1 / len(bot.rk24.house_mates)) * 100)))
+    except IndexError:
+        await ctx.send("No-one to choose from")
+
+
+@bot.command(name="members")
+async def members(ctx):
+    await ctx.send(str(bot.rk24))
+
+
+# Global Variable
+bot.rk24 = House("Riverknoll_24")
+
+if __name__ == '__main__':
+    '''
+        Temporary home of things that 
+        need to run on their own for memory sake
+    '''
     # Below is quick Testsuite
-    rk24 = House("Riverknoll_24")
-    mate1 = HouseMate("Marcelo Escalante", "Riverknoll_24")
-    mate2 = HouseMate("Nolan Aimes")
+    # Tasks have to be created with the TaskType.EnumName
+    bot.rk24.task_schedulear.createTask(12, taskType=TaskType.Trash)
+    bot.rk24.task_schedulear.createTask(24, taskType=TaskType.Dishes)
+    bot.rk24.task_schedulear.createAllTasks(30)
 
-    rk24.add_house_member(mate1)
-    rk24.add_house_member(mate2)
-
-    # rk24.schedueleTaskByDay(7)  # a week per task
-    rk24.runAllTasks(7);
-    rk24.task_schedulear.createTask(12)
-    printStr = str(rk24.task_schedulear)
-    # rk24.skipTask(@mention.DevTest#8726) example
-
-    await ctx.send(printStr)
-
-
+    print(bot.rk24.task_schedulear.task_queue)
+    print(bot.rk24.task_schedulear)
 bot.run(SUPER_SECRET_API_KEY)
 # EOF
